@@ -81,6 +81,10 @@ void AP_SendItem(std::set<int64_t> const& locations);
 // Called when Story completed, sends StatusUpdate
 void AP_StoryComplete();
 
+/* Location Information Functions */
+const std::set<int64_t> AP_GetMissingLocations();
+const std::set<int64_t> AP_GetCheckedLocations();
+const std::set<int64_t> AP_GetAllLocations();
 /* Deathlink Functions */
 
 bool AP_DeathLinkPending();
@@ -153,6 +157,10 @@ struct AP_RoomInfo {
 };
 
 /* Connection Information Functions */
+
+// parameter Function will be called when connected sucessfully or if the client couldn't connect after 'max_retries' attempts
+void AP_SetClientConnectedCallback(void (*f_clientConnected)());
+void AP_SetClientCouldntConnectCallback(int max_retries, void (*f_clientCouldntConnect)(AP_ConnectionStatus));
 
 int AP_GetRoomInfo(AP_RoomInfo*);
 AP_ConnectionStatus AP_GetConnectionStatus();

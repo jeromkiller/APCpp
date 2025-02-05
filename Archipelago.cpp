@@ -19,9 +19,11 @@
 #include <functional>
 #include <utility>
 #include <vector>
+#include <algorithm>
 
 constexpr int AP_OFFLINE_SLOT = 1404;
-#define AP_OFFLINE_NAME "You"
+constexpr char const* AP_OFFLINE_NAME = "You";
+constexpr AP_NetworkVersion AP_DEFAULT_NETWORK_VERSION = {0,5,1}; // Default for compatibility reasons
 
 //Setup Stuff
 bool init = false;
@@ -30,6 +32,7 @@ bool refused = false;
 bool multiworld = true;
 bool isSSL = true;
 bool ssl_success = false;
+int max_retry_count = 0;
 int ap_player_id;
 std::string ap_player_name;
 size_t ap_player_name_hash;
@@ -38,7 +41,7 @@ std::string ap_game;
 std::string ap_passwd;
 std::uint64_t ap_uuid = 0;
 std::mt19937 rando;
-AP_NetworkVersion client_version = {0,5,1}; // Default for compatibility reasons
+AP_NetworkVersion client_version = AP_DEFAULT_NETWORK_VERSION; 
 
 //Deathlink Stuff
 bool deathlinkstat = false;
@@ -56,7 +59,13 @@ std::map<int, AP_NetworkPlayer> map_players;
 std::map<std::pair<std::string,int64_t>, std::string> map_location_id_name;
 std::map<std::pair<std::string,int64_t>, std::string> map_item_id_name;
 
+// Locations
+std::set<int64_t> missing_locations;
+std::set<int64_t> checked_locations;
+
 // Callback function pointers
+void (*clientConnectedfunc)() = nullptr;
+void (*clientCouldntConnectfunc)(AP_ConnectionStatus) = nullptr;
 void (*resetItemValues)();
 void (*getitemfunc)(int64_t,bool);
 void (*checklocfunc)(int64_t);
@@ -64,6 +73,7 @@ void (*locinfofunc)(std::vector<AP_NetworkItem>) = nullptr;
 void (*recvdeath)() = nullptr;
 void (*setreplyfunc)(AP_SetReply) = nullptr;
 void (*bouncedfunc)(AP_Bounce) = nullptr;
+
 
 // Serverdata Management
 std::map<std::string,AP_DataType> map_serverdata_typemanage;
@@ -151,8 +161,13 @@ void AP_Init(const char* ip, const char* game, const char* player_name, const ch
                     itr.second->status = AP_RequestStatus::Error;
                     map_server_data.erase(itr.first);
                 }
-                printf("AP: Error connecting to Archipelago. Retries: %d\n", msg->errorInfo.retries-1);
-                if (msg->errorInfo.retries-1 >= 2 && isSSL && !ssl_success) {
+                int retry_count =  msg->errorInfo.retries - 1;
+                if(max_retry_count != 0 && retry_count < max_retry_count) {
+                    refused = true;
+                    clientCouldntConnectfunc(AP_GetConnectionStatus());
+                }
+                printf("AP: Error connecting to Archipelago. Retries: %d\n", retry_count);
+                if (retry_count >= 2 && isSSL && !ssl_success) {
                     printf("AP: SSL connection failed. Attempting unencrypted...\n");
                     webSocket.setUrl("ws://" + ap_ip);
                     isSSL = false;
@@ -243,13 +258,14 @@ void AP_Shutdown() {
     multiworld = true;
     isSSL = true;
     ssl_success = false;
+    max_retry_count = 0;
     ap_player_id = 0;
     ap_player_name.clear();
     ap_ip.clear();
     ap_game.clear();
     ap_passwd.clear();
     ap_uuid = 0;
-    client_version = {0,2,6};
+    client_version = AP_DEFAULT_NETWORK_VERSION;
     deathlinkstat = false;
     deathlinksupported = false;
     enable_deathlink = false;
@@ -260,6 +276,8 @@ void AP_Shutdown() {
     map_players.clear();
     map_location_id_name.clear();
     map_item_id_name.clear();
+    clientConnectedfunc = nullptr;
+    clientCouldntConnectfunc = nullptr;
     resetItemValues = nullptr;
     getitemfunc = nullptr;
     checklocfunc = nullptr;
@@ -277,6 +295,8 @@ void AP_Shutdown() {
     slotdata_strings.clear();
     datapkg_cache = Json::objectValue;
     sp_ap_root = Json::objectValue;
+    missing_locations.clear();
+    checked_locations.clear();
 }
 
 bool AP_IsInit() {
@@ -295,6 +315,8 @@ void AP_SendItem(int64_t idx) {
 void AP_SendItem(std::set<int64_t> const& locations) {
     for (int64_t idx : locations) {
         printf("AP: Checked '%s'.\n", getLocationName(ap_game, idx).c_str());
+        missing_locations.erase(idx);
+        checked_locations.insert(idx);
     }
     if (multiworld) {
         Json::Value req_t;
@@ -378,6 +400,20 @@ void AP_StoryComplete() {
     APSend(writer.write(req_t));
 }
 
+const std::set<int64_t> AP_GetMissingLocations() {
+    return missing_locations;
+}
+const std::set<int64_t> AP_GetCheckedLocations() {
+    return checked_locations;
+}
+const std::set<int64_t> AP_GetAllLocations() {
+    std::set<int64_t> all_locations;
+    std::set_union(std::begin(missing_locations), std::end(missing_locations),
+                    std::begin(checked_locations), std::end(checked_locations),
+                    std::inserter(all_locations, std::begin(all_locations)));
+    return all_locations;
+}
+
 void AP_DeathLinkSend() {
     if (!enable_deathlink || !multiworld) return;
     if (cur_deathlink_amnesty > 0) {
@@ -416,6 +452,14 @@ void AP_SetLocationCheckedCallback(void (*f_loccheckrecv)(int64_t)) {
 
 void AP_SetLocationInfoCallback(void (*f_locinfrecv)(std::vector<AP_NetworkItem>)) {
     locinfofunc = f_locinfrecv;
+}
+
+void AP_SetClientConnectedCallback(void (*f_clientConnected)()) {
+    clientConnectedfunc = f_clientConnected;
+}
+void AP_SetClientCouldntConnectCallback(int max_retries, void (*f_clientCouldntConnect)(AP_ConnectionStatus)){
+    clientCouldntConnectfunc = f_clientCouldntConnect;
+    max_retry_count = max_retries;
 }
 
 void AP_SetDeathLinkRecvCallback(void (*f_deathrecv)()) {
@@ -667,9 +711,18 @@ bool parse_response(std::string msg, std::string &request) {
             ssl_success = auth && isSSL;
             refused = false;
 
+            checked_locations.clear();
+            missing_locations.clear();
+
+            for (unsigned int j = 0; j < root[i]["missing_locations"].size(); j++) {
+                int64_t loc_id = root[i]["missing_locations"][j].asInt64();
+                missing_locations.insert(loc_id);
+            }
+
             for (unsigned int j = 0; j < root[i]["checked_locations"].size(); j++) {
                 //Sync checks with server
                 int64_t loc_id = root[i]["checked_locations"][j].asInt64();
+                checked_locations.insert(loc_id);
                 (*checklocfunc)(loc_id);
             }
             for (unsigned int j = 0; j < root[i]["players"].size(); j++) {
@@ -738,6 +791,10 @@ bool parse_response(std::string msg, std::string &request) {
                 req_t.append(sync);
             }
             request = writer.write(req_t);
+
+            if(clientConnectedfunc) {
+                clientConnectedfunc();
+            }
             return true;
         } else if (cmd == "DataPackage") {
             parseDataPkg(root[i]["data"]);
@@ -895,6 +952,8 @@ bool parse_response(std::string msg, std::string &request) {
             //Sync checks with server
             for (unsigned int j = 0; j < root[i]["checked_locations"].size(); j++) {
                 int64_t loc_id = root[i]["checked_locations"][j].asInt64();
+                missing_locations.erase(loc_id);
+                checked_locations.insert(loc_id);
                 (*checklocfunc)(loc_id);
             }
             //Update Player aliases if present
@@ -906,6 +965,9 @@ bool parse_response(std::string msg, std::string &request) {
             refused = true;
             printf("AP: Archipelago Server has refused connection. Check Password / Name / IP and restart the Game.\n");
             fflush(stdout);
+            if(clientCouldntConnectfunc) {
+                clientCouldntConnectfunc(AP_GetConnectionStatus());
+            }
         } else if (cmd == "Bounced") {
             if (!enable_deathlink && bouncedfunc == nullptr) continue;
             if (bouncedfunc == nullptr) {
