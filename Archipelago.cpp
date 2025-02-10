@@ -58,6 +58,7 @@ bool queueitemrecvmsg = true;
 std::map<int, AP_NetworkPlayer> map_players;
 std::map<std::pair<std::string,int64_t>, std::string> map_location_id_name;
 std::map<std::pair<std::string,int64_t>, std::string> map_item_id_name;
+std::map<std::string, int64_t> map_name_location_id;
 
 // Locations
 std::set<int64_t> missing_locations;
@@ -1046,6 +1047,7 @@ void parseDataPkg() {
         }
         for (std::string location : game_data["location_name_to_id"].getMemberNames()) {
             map_location_id_name[{game,game_data["location_name_to_id"][location].asInt64()}] = location;
+            map_name_location_id[location] = game_data["location_name_to_id"][location].asInt64();
         }
     }
 }
@@ -1062,4 +1064,12 @@ std::string getLocationName(std::string game, int64_t id) {
 
 AP_NetworkPlayer getPlayer(int team, int slot) {
     return map_players[slot];
+}
+
+int64_t CheckNameToId(const std::string& check_name) {
+    return map_name_location_id[check_name];
+}
+
+std::string getAPitemName(int64_t id){
+    return map_item_id_name.at({"Ocarina of Time", id});
 }

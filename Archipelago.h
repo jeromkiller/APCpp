@@ -39,6 +39,10 @@ struct AP_NetworkPlayer {
     std::string game;
 };
 
+// conversions
+int64_t CheckNameToId(const std::string& check_name);
+std::string getAPitemName(int64_t id);
+
 // Set current client version
 void AP_SetClientVersion(AP_NetworkVersion*);
 
